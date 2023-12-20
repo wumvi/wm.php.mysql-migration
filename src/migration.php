@@ -1,10 +1,11 @@
 <?php
 declare(strict_types=1);
 
+const MIGRATION_INDEX = 0;
 const MIGRATION_FILE = 1;
 
 unset($argv[0]);
-parse_str(implode('&',$argv),$params);
+parse_str(implode('&', $argv), $params);
 $fileConfig = $params['config'] ?? 'config/migration.ini';
 $section = $params['section'] ?? 'dev';
 
@@ -38,7 +39,7 @@ $user = $config['user'];
 $password = $config['pwd'];
 $dbName = $config['db'];
 $port = (int)$config['port'];
-$table = $config['table'];
+$migrationTable = $config['table'];
 $migrationDir = $config['dir'];
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
@@ -59,57 +60,65 @@ try {
     exit(2);
 }
 
-// Проверяем существование таблиц
+// Check migration table
 $sql = "SELECT EXISTS (
     SELECT TABLE_NAME
     FROM information_schema.TABLES
-    WHERE TABLE_SCHEMA LIKE '$dbName' AND TABLE_TYPE LIKE 'BASE TABLE' AND TABLE_NAME = '$table'
+    WHERE TABLE_SCHEMA LIKE '$dbName' AND TABLE_TYPE LIKE 'BASE TABLE' AND TABLE_NAME = '$migrationTable'
 ) as result;";
 $result = query($mysql, $sql);
 $result = $result->fetch_assoc();
 checkResult($result, $sql);
 
+// Creat table if no exists
 if ($result['result'] !== '1') {
-    // Создаём таблицу
-    $sql = "create table $dbName.$table (
-    id       int unsigned auto_increment,
-    `index`  int unsigned                         not null,
-    filename varchar(255)                         not null,
-    date_add datetime default current_timestamp() not null,
-    constraint migration_log_pk
-        primary key (id)
-);";
+    $sql = "CREATE TABLE $dbName.$migrationTable (
+          `id` int unsigned NOT NULL AUTO_INCREMENT,
+          `index` int unsigned NOT NULL,
+          `filename` varchar(255) NOT NULL,
+          `date_add` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (`id`),
+          UNIQUE KEY `migration_log_pk` (`filename`)
+        ) ENGINE=InnoDB
+    ";
     query($mysql, $sql);
 }
-
-$sql = "LOCK TABLES $table WRITE;";
+// lock table for write
+$sql = "SELECT * FROM `$migrationTable` FOR UPDATE";
 query($mysql, $sql);
 
-$sql = 'select max(`index`) max from ' . $table;
+$sql = "SELECT max(`index`) max FROM `$migrationTable`";
 $result = query($mysql, $sql)->fetch_assoc();
 checkResult($result, $sql);
-$maxMigration = $result['max'] ?: -1;
+$maxMigration = (int)($result['max'] ?: -1);
+query($mysql, 'COMMIT');
 echo 'Current migration: ', $maxMigration, PHP_EOL;
 
-$files = scandir($migrationDir, SCANDIR_SORT_ASCENDING);
+$files = scandir($migrationDir);
 $migrationData = [];
 foreach ($files as $file) {
     if (!is_file($migrationDir . $file)) {
         continue;
     }
-    if (!preg_match('/^\d+(-\w+)?\.sql$/', $file)) {
+    $flag = preg_match('/^(?<index>\d+)(-\w+)?\.sql$/', $file, $match);
+    if (!$flag) {
         echo 'Strange file ' . $file, PHP_EOL;
         continue;
     }
-
-    [$fileIndex,] = preg_split('/[.-]/', $file);
-    $fileIndex = (int)$fileIndex;
-
-    if ($maxMigration < $fileIndex) {
-        $migrationData[] = [$fileIndex, $file];
-    }
+    $migrationData[] = [(int)$match['index'], $file];
 }
-unset($files);
+
+usort($migrationData, function ($a, $b) {
+    $ai = $a[MIGRATION_INDEX];
+    $bi = $b[MIGRATION_INDEX];
+
+    return $ai === $bi ? 0 : (($ai < $bi) ? -1 : 1);
+});
+
+$migrationData = array_filter($migrationData, function ($item) use ($maxMigration) {
+    return $maxMigration < $item[MIGRATION_INDEX];
+});
+
 if (count($migrationData) === 0) {
     echo 'Up to date', PHP_EOL;
     exit;
@@ -123,8 +132,15 @@ foreach ($migrationData as $data) {
     list($index, $file) = $data;
     echo '----------------------', PHP_EOL;
     echo 'Start ' . $file, PHP_EOL;
+
+    $stmt = $mysql->prepare("INSERT INTO `$migrationTable` (`index`, filename) values(?, ?)");
+    $stmt->bind_param("is", $index, $file);
+    $result = $stmt->execute();
+    $rowId = $stmt->insert_id;
+
     $sql = file_get_contents($migrationDir . $file);
     if (empty($sql)) {
+        deleteMigrationRow($mysql, $migrationTable, $rowId);
         echo 'Error read from file ' . $file . ' or file is empty', PHP_EOL;
         exit(3);
     }
@@ -132,22 +148,27 @@ foreach ($migrationData as $data) {
         $result = $mysql->multi_query($sql);
         do {
             $result = $mysql->use_result();
-            $result->free_result();
+            if (!is_bool($result)) {
+                $result->free_result();
+            }
         } while ($mysql->next_result());
     } catch (\mysqli_sql_exception $ex) {
+        deleteMigrationRow($mysql, $migrationTable, $rowId);
         echo 'Error to exec file: ' . $file, PHP_EOL;
         echo 'msg: ' . $ex->getMessage(), PHP_EOL;
         exit(4);
     }
 
-    $stmt = $mysql->prepare('insert into ' . $table . '(`index`, filename) values(?, ?)');
-    $stmt->bind_param("is", $index, $file);
-    $stmt->execute();
     echo 'End ' . $file, PHP_EOL;
 }
 
-query($mysql, "UNLOCK TABLES");
 $mysql->close();
+
+
+function deleteMigrationRow(\mysqli $mysqli, string $migrationTable, int $id)
+{
+    query($mysqli, "DELETE FROM `$migrationTable` WHERE ID = $id");
+}
 
 function checkResult($result, string $sql)
 {

@@ -9,6 +9,9 @@
   "require": {
     "ext-mysqli": "*"
   },
+  "bin": [
+    "src/migration.php"
+  ],
   "license": "proprietary",
   "archive": {
     "exclude": [

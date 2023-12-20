@@ -1,1 +1,1 @@
-select 3;
+create table test3 (id int);
