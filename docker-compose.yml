@@ -1,0 +1,12 @@
+version: '2.3'
+services:
+  db8-master:
+    image: mysql:8
+    container_name: wm.php.mysql-migration
+    hostname: wm.php.mysql-migration
+    environment:
+      MYSQL_ROOT_PASSWORD: pwd
+    volumes:
+      - ./workdir/data/:/var/lib/mysql
+      - ./workdir/log/:/var/log/mysql/
+    network_mode: 'host'

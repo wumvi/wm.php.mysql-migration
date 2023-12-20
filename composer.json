@@ -1,0 +1,23 @@
+{
+  "name": "wumvi/php.mysql-migration",
+  "authors": [
+    {
+      "name": "Vitaliy Kozlenko",
+      "email": "vk@wumvi.com"
+    }
+  ],
+  "require": {
+    "ext-mysqli": "*"
+  },
+  "license": "proprietary",
+  "archive": {
+    "exclude": [
+      "README.md",
+      "dev",
+      "config",
+      "workdir",
+      "docker-compose.yml",
+      "migration"
+    ]
+  }
+}
